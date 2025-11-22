@@ -22,112 +22,134 @@ class TransactionController extends Controller
     /**
      * Display a listing of the resource.
      */
-    public function index(Request $request)
-    {
-        $query = Transaction::with(['customer', 'service'])
-            ->orderBy('created_at', 'desc');
+   public function index(Request $request)
+{
+    $query = Transaction::with(['customer', 'service'])
+        ->orderBy('created_at', 'desc');
 
-        // Filter berdasarkan status pembayaran
-        if ($request->has('payment_status') && $request->payment_status !== '') {
-            $query->where('payment_status', $request->payment_status);
-        }
-
-        // Filter berdasarkan tanggal
-        if ($request->has('start_date') && $request->start_date) {
-            $query->where('transaction_date', '>=', $request->start_date);
-        }
-
-        if ($request->has('end_date') && $request->end_date) {
-            $query->where('transaction_date', '<=', $request->end_date);
-        }
-
-        $transactions = $query->paginate(10);
-
-        $totalRevenue = Transaction::successful()->sum('total_amount');
-        $pendingTransactions = Transaction::pending()->count();
-
-        return view('transactions.index', compact(
-            'transactions',
-            'totalRevenue',
-            'pendingTransactions'
-        ));
+    // Filter berdasarkan status pembayaran
+    if ($request->has('payment_status') && $request->payment_status !== '') {
+        $query->where('payment_status', $request->payment_status);
     }
+
+    // Filter berdasarkan tanggal
+    if ($request->has('start_date') && $request->start_date) {
+        $query->where('transaction_date', '>=', $request->start_date);
+    }
+
+    if ($request->has('end_date') && $request->end_date) {
+        $query->where('transaction_date', '<=', $request->end_date);
+    }
+
+    $transactions = $query->paginate(10);
+
+    // Stats
+    $successCount = Transaction::where('payment_status', 'paid')->count();
+    $pendingCount = Transaction::where('payment_status', 'pending')->count();
+    $failedCount = Transaction::whereIn('payment_status', ['failed', 'expired'])->count();
+
+    return view('transactions.index', compact(
+        'transactions',
+        'successCount',
+        'pendingCount',
+        'failedCount'
+    ));
+}
 
     /**
      * Show the form for creating a new resource.
      */
-    public function create()
-    {
-        $services = Service::active()->get();
-        $customers = Customer::all();
+   public function create()
+{
+    $services = Service::active()->get();
+    $customers = Customer::orderBy('name')->get();
 
-        return view('transactions.create', compact('services', 'customers'));
-    }
+    return view('transactions.create', compact('services', 'customers'));
+}
 
     /**
      * Store a newly created resource in storage.
      */
     public function store(Request $request)
-    {
-        $validated = $request->validate([
-            'customer_id' => 'required|exists:customers,id',
-            'service_id' => 'required|exists:services,id',
-            'quantity' => 'required|numeric|min:0.1',
-            'payment_method' => 'required|in:cash,midtrans,transfer',
-            'notes' => 'nullable|string|max:500'
-        ]);
+{
+    $validated = $request->validate([
+        'customer_name' => 'required|string|max:100',
+        'customer_phone' => 'nullable|string|max:20',
+        'customer_address' => 'nullable|string|max:500',
+        'service_id' => 'required|exists:services,id',
+        'quantity' => 'required|numeric|min:0.1',
+        'payment_method' => 'required|in:cash,midtrans,transfer',
+        'notes' => 'nullable|string|max:500'
+    ]);
 
-        try {
-            DB::beginTransaction();
+    try {
+        DB::beginTransaction();
 
-            $service = Service::findOrFail($validated['service_id']);
-            $totalAmount = $service->price * $validated['quantity'];
+        // Find or create customer
+        $customer = Customer::firstOrCreate(
+            ['phone' => $validated['customer_phone'] ?: 'unknown'],
+            [
+                'name' => $validated['customer_name'],
+                'address' => $validated['customer_address']
+            ]
+        );
 
-            $transactionData = [
-                'transaction_date' => now(),
-                'customer_id' => $validated['customer_id'],
-                'service_id' => $validated['service_id'],
-                'quantity' => $validated['quantity'],
-                'price' => $service->price,
-                'total_amount' => $totalAmount,
-                'payment_method' => $validated['payment_method'],
-                'payment_status' => $validated['payment_method'] == 'cash' ? 'paid' : 'pending',
-                'notes' => $validated['notes']
-            ];
-
-            // Generate Midtrans order ID untuk pembayaran digital
-            if ($validated['payment_method'] !== 'cash') {
-                $transactionData['midtrans_order_id'] = 'ORDER-' . Str::uuid();
-            }
-
-            $transaction = Transaction::create($transactionData);
-
-            // Handle Midtrans payment
-            if ($validated['payment_method'] === 'midtrans') {
-                $midtransResponse = $this->midtransService->createTransaction($transaction);
-
-                if (!$midtransResponse['success']) {
-                    throw new \Exception($midtransResponse['message']);
-                }
-
-                $transaction->update([
-                    'midtrans_payment_url' => $midtransResponse['payment_url']
-                ]);
-            }
-
-            DB::commit();
-
-            return redirect()->route('transactions.show', $transaction)
-                ->with('success', 'Transaksi berhasil dibuat!');
-
-        } catch (\Exception $e) {
-            DB::rollBack();
-
-            return redirect()->back()
-                ->with('error', 'Gagal membuat transaksi: ' . $e->getMessage())
-                ->withInput();
+        // If customer exists but name/address is different, update it
+        if ($customer->name !== $validated['customer_name'] || $customer->address !== $validated['customer_address']) {
+            $customer->update([
+                'name' => $validated['customer_name'],
+                'address' => $validated['customer_address']
+            ]);
         }
+
+        $service = Service::findOrFail($validated['service_id']);
+        $totalAmount = $service->price * $validated['quantity'];
+
+        $transactionData = [
+            'transaction_date' => now(),
+            'customer_id' => $customer->id,
+            'service_id' => $validated['service_id'],
+            'quantity' => $validated['quantity'],
+            'price' => $service->price,
+            'total_amount' => $totalAmount,
+            'payment_method' => $validated['payment_method'],
+            'payment_status' => $validated['payment_method'] == 'cash' ? 'paid' : 'pending',
+            'notes' => $validated['notes']
+        ];
+
+        // Generate Midtrans order ID untuk pembayaran digital
+        if ($validated['payment_method'] !== 'cash') {
+            $transactionData['midtrans_order_id'] = 'ORDER-' . Str::uuid();
+        }
+
+        $transaction = Transaction::create($transactionData);
+
+        // Handle Midtrans payment
+        if ($validated['payment_method'] === 'midtrans') {
+            $midtransResponse = $this->midtransService->createTransaction($transaction);
+
+            if (!$midtransResponse['success']) {
+                throw new \Exception($midtransResponse['message']);
+            }
+
+            $transaction->update([
+                'midtrans_payment_url' => $midtransResponse['payment_url']
+            ]);
+        }
+
+        DB::commit();
+
+        return redirect()->route('transactions.show', $transaction)
+            ->with('success', 'Transaksi berhasil dibuat!');
+
+    } catch (\Exception $e) {
+        DB::rollBack();
+
+        return redirect()->back()
+            ->with('error', 'Gagal membuat transaksi: ' . $e->getMessage())
+            ->withInput();
     }
+}
 
     /**
      * Display the specified resource.
