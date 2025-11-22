@@ -14,22 +14,33 @@ class DashboardController extends Controller
      */
     public function index()
     {
-        $totalRevenue = Transaction::successful()->sum('total_amount');
-        $totalTransactions = Transaction::count();
-        $totalCustomers = Customer::count();
-        $totalServices = Service::active()->count();
+        try {
+            $totalRevenue = Transaction::where('payment_status', 'paid')->sum('total_amount');
+            $totalTransactions = Transaction::count();
+            $totalCustomers = Customer::count();
+            $totalServices = Service::where('is_active', true)->count();
 
-        $recentTransactions = Transaction::with(['customer', 'service'])
-            ->orderBy('created_at', 'desc')
-            ->limit(5)
-            ->get();
+            $recentTransactions = Transaction::with(['customer', 'service'])
+                ->orderBy('created_at', 'desc')
+                ->limit(5)
+                ->get();
 
-        return view('dashboard', compact(
-            'totalRevenue',
-            'totalTransactions',
-            'totalCustomers',
-            'totalServices',
-            'recentTransactions'
-        ));
+            return view('dashboard', compact(
+                'totalRevenue',
+                'totalTransactions',
+                'totalCustomers',
+                'totalServices',
+                'recentTransactions'
+            ));
+        } catch (\Exception $e) {
+            // Fallback jika ada error
+            return view('dashboard', [
+                'totalRevenue' => 0,
+                'totalTransactions' => 0,
+                'totalCustomers' => 0,
+                'totalServices' => 0,
+                'recentTransactions' => collect()
+            ]);
+        }
     }
 }
