@@ -14,10 +14,10 @@ class TransactionController extends Controller
 {
     protected $midtransService;
 
-    // public function __construct(MidtransService $midtransService)
-    // {
-    //     $this->midtransService = $midtransService;
-    // }
+    public function __construct(MidtransService $midtransService)
+    {
+        $this->midtransService = $midtransService;
+    }
 
     /**
      * Display a listing of the resource.
@@ -78,98 +78,126 @@ class TransactionController extends Controller
  */
 public function store(Request $request)
 {
-    // Validasi input
     $validated = $request->validate([
-        'customer_name' => 'required|string|max:100',
-        'customer_phone' => 'nullable|string|max:20',
-        'customer_address' => 'nullable|string|max:500',
-        'service_id' => 'required|exists:services,id', // Pastikan services table ada
-        'quantity' => 'required|numeric|min:0.1',
-        'payment_method' => 'required|in:cash,midtrans,transfer',
-        'notes' => 'nullable|string|max:500'
-    ], [
-        'service_id.exists' => 'Layanan yang dipilih tidak valid. Silakan pilih layanan yang tersedia.',
-        'customer_name.required' => 'Nama pelanggan harus diisi.',
-        'quantity.required' => 'Jumlah harus diisi.',
-        'quantity.min' => 'Jumlah minimal 0.1.',
+        'customer_name'     => 'required|string|max:100',
+        'customer_phone'    => 'nullable|string|max:20',
+        'customer_address'  => 'nullable|string|max:500',
+        'service_id'        => 'required|exists:services,id',
+        'quantity'          => 'required|numeric|min:0.1',
+        'payment_method'    => 'required|in:cash,midtrans,transfer',
+        'notes'             => 'nullable|string|max:500'
     ]);
+
+    \Log::info('Transaction Store Started', $validated);
 
     try {
         DB::beginTransaction();
 
-        // Find or create customer
+        // 1. Cari atau buat customer
         $customer = Customer::firstOrCreate(
+            ['phone' => $validated['customer_phone'] ?: 'N/A-' . time()],
             [
-                'phone' => $validated['customer_phone'] ?: 'unknown-'.time()
-            ],
-            [
-                'name' => $validated['customer_name'],
+                'name'    => $validated['customer_name'],
                 'address' => $validated['customer_address'] ?? '-'
             ]
         );
 
-        // Update customer data if different
-        if ($customer->name !== $validated['customer_name'] || $customer->address !== $validated['customer_address']) {
-            $customer->update([
-                'name' => $validated['customer_name'],
-                'address' => $validated['customer_address'] ?? $customer->address
-            ]);
-        }
-
-        // Get service with validation
-        $service = Service::find($validated['service_id']);
-
-        if (!$service) {
-            throw new \Exception('Layanan tidak ditemukan.');
-        }
-
+        // 2. Hitung total
+        $service = Service::findOrFail($validated['service_id']);
         $totalAmount = $service->price * $validated['quantity'];
 
-        $transactionData = [
-            'transaction_date' => now(),
-            'customer_id' => $customer->id,
-            'service_id' => $validated['service_id'],
-            'quantity' => $validated['quantity'],
-            'price' => $service->price,
-            'total_amount' => $totalAmount,
-            'payment_method' => $validated['payment_method'],
-            'payment_status' => $validated['payment_method'] == 'cash' ? 'paid' : 'pending',
-            'notes' => $validated['notes']
-        ];
+        // 3. Generate order ID yang unik
+        $orderId = 'ORD-' . Str::random(10) . '-' . time();
 
-        // Generate Midtrans order ID untuk pembayaran digital
-        if ($validated['payment_method'] !== 'cash') {
-            $transactionData['midtrans_order_id'] = 'ORDER-' . Str::uuid();
-        }
+        // 4. Buat transaksi (invoice_number akan auto-generate dari model)
+        $transaction = Transaction::create([
+            'transaction_date'  => now(),
+            'customer_id'       => $customer->id,
+            'service_id'        => $validated['service_id'],
+            'quantity'          => $validated['quantity'],
+            'price'             => $service->price,
+            'total_amount'      => $totalAmount,
+            'payment_method'    => $validated['payment_method'],
+            'payment_status'    => $validated['payment_method'] === 'cash' ? 'paid' : 'pending',
+            'notes'             => $validated['notes'] ?? null,
+            'midtrans_order_id' => $validated['payment_method'] === 'cash' ? null : $orderId,
+        ]);
 
-        $transaction = Transaction::create($transactionData);
+        \Log::info('Transaction created', [
+            'transaction_id' => $transaction->id,
+            'invoice_number' => $transaction->invoice_number,
+            'order_id' => $orderId,
+            'payment_method' => $validated['payment_method']
+        ]);
 
-        // Handle Midtrans payment
+        // 5. Jika Midtrans, buat snap token
         if ($validated['payment_method'] === 'midtrans') {
-            $midtransResponse = $this->midtransService->createTransaction($transaction);
+            \Log::info('Processing Midtrans payment');
 
-            if (!$midtransResponse['success']) {
-                throw new \Exception($midtransResponse['message']);
+            $response = $this->midtransService->createTransaction($transaction);
+
+            \Log::info('Midtrans response', $response);
+
+            if (!$response['success']) {
+                throw new \Exception('Gagal generate token Midtrans: ' . $response['message']);
             }
 
             $transaction->update([
-                'midtrans_payment_url' => $midtransResponse['payment_url']
+                'midtrans_snap_token'  => $response['snap_token'],
+                'midtrans_payment_url' => $response['payment_url'],
             ]);
+
+            \Log::info('Transaction updated with snap token', [
+                'snap_token' => substr($response['snap_token'], 0, 50) . '...'
+            ]);
+
+            DB::commit();
+
+            \Log::info('Redirecting to snap payment page');
+
+            // Redirect ke halaman snap payment
+            return redirect()->route('transactions.snap', $transaction);
         }
 
         DB::commit();
-
-        return redirect()->route('transactions.show', $transaction)
-            ->with('success', 'Transaksi berhasil dibuat! 📝');
+        \Log::info('Cash transaction completed');
+        return redirect()->route('transactions.index')->with('success', 'Transaksi berhasil dibuat!');
 
     } catch (\Exception $e) {
         DB::rollBack();
-
-        return redirect()->back()
-            ->with('error', 'Gagal membuat transaksi: ' . $e->getMessage())
-            ->withInput();
+        \Log::error('Transaction store error', [
+            'error' => $e->getMessage(),
+            'trace' => $e->getTraceAsString()
+        ]);
+        return back()->withErrors(['error' => 'Gagal: ' . $e->getMessage()])->withInput();
     }
 }
+
+
+public function snapPayment(Transaction $transaction)
+{
+    // Debug info
+    \Log::info('Snap Payment Accessed', [
+        'transaction_id' => $transaction->id,
+        'order_id' => $transaction->midtrans_order_id,
+        'snap_token' => $transaction->midtrans_snap_token ? 'exists' : 'missing',
+        'payment_method' => $transaction->payment_method,
+        'payment_status' => $transaction->payment_status
+    ]);
+
+    if ($transaction->payment_method !== 'midtrans') {
+        return redirect()->route('transactions.index')
+            ->with('error', 'Transaksi ini bukan pembayaran Midtrans.');
+    }
+
+    if (!$transaction->midtrans_snap_token) {
+        return redirect()->route('transactions.show', $transaction)
+            ->with('error', 'Token pembayaran tidak tersedia. Silakan hubungi admin.');
+    }
+
+    return view('transactions.snap', compact('transaction'));
+}
+
 
     /**
      * Display the specified resource.
@@ -312,4 +340,7 @@ public function store(Request $request)
             return response()->json($result, 400);
         }
     }
+
+
+
 }
