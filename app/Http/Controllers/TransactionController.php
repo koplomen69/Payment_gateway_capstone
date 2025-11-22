@@ -70,16 +70,28 @@ class TransactionController extends Controller
     /**
      * Store a newly created resource in storage.
      */
-    public function store(Request $request)
+   /**
+ * Store a newly created resource in storage.
+ */
+/**
+ * Store a newly created resource in storage.
+ */
+public function store(Request $request)
 {
+    // Validasi input
     $validated = $request->validate([
         'customer_name' => 'required|string|max:100',
         'customer_phone' => 'nullable|string|max:20',
         'customer_address' => 'nullable|string|max:500',
-        'service_id' => 'required|exists:services,id',
+        'service_id' => 'required|exists:services,id', // Pastikan services table ada
         'quantity' => 'required|numeric|min:0.1',
         'payment_method' => 'required|in:cash,midtrans,transfer',
         'notes' => 'nullable|string|max:500'
+    ], [
+        'service_id.exists' => 'Layanan yang dipilih tidak valid. Silakan pilih layanan yang tersedia.',
+        'customer_name.required' => 'Nama pelanggan harus diisi.',
+        'quantity.required' => 'Jumlah harus diisi.',
+        'quantity.min' => 'Jumlah minimal 0.1.',
     ]);
 
     try {
@@ -87,22 +99,30 @@ class TransactionController extends Controller
 
         // Find or create customer
         $customer = Customer::firstOrCreate(
-            ['phone' => $validated['customer_phone'] ?: 'unknown'],
+            [
+                'phone' => $validated['customer_phone'] ?: 'unknown-'.time()
+            ],
             [
                 'name' => $validated['customer_name'],
-                'address' => $validated['customer_address']
+                'address' => $validated['customer_address'] ?? '-'
             ]
         );
 
-        // If customer exists but name/address is different, update it
+        // Update customer data if different
         if ($customer->name !== $validated['customer_name'] || $customer->address !== $validated['customer_address']) {
             $customer->update([
                 'name' => $validated['customer_name'],
-                'address' => $validated['customer_address']
+                'address' => $validated['customer_address'] ?? $customer->address
             ]);
         }
 
-        $service = Service::findOrFail($validated['service_id']);
+        // Get service with validation
+        $service = Service::find($validated['service_id']);
+
+        if (!$service) {
+            throw new \Exception('Layanan tidak ditemukan.');
+        }
+
         $totalAmount = $service->price * $validated['quantity'];
 
         $transactionData = [
@@ -140,7 +160,7 @@ class TransactionController extends Controller
         DB::commit();
 
         return redirect()->route('transactions.show', $transaction)
-            ->with('success', 'Transaksi berhasil dibuat!');
+            ->with('success', 'Transaksi berhasil dibuat! 📝');
 
     } catch (\Exception $e) {
         DB::rollBack();
