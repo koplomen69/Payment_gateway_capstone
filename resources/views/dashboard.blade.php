@@ -9,7 +9,7 @@
 </head>
 <body class="bg-gray-50">
     <div class="min-h-screen">
-        <!-- Navigation (Updated with Tabs) -->
+        <!-- Navigation -->
         <nav class="bg-blue-600 text-white shadow-lg">
             <div class="container mx-auto px-4 py-4">
                 <div class="flex justify-between items-center">
@@ -17,13 +17,8 @@
                         <i class="fas fa-tshirt text-2xl"></i>
                         <h1 class="text-2xl font-bold">Ananda Laundry</h1>
                     </div>
-                    <div class="flex space-x-6 text-sm">
-                        <a href="{{ route('dashboard') }}" class="hover:text-blue-200">Dashboard</a>
-                        <a href="{{ route('transactions.index') }}" class="hover:text-blue-200">Transaksi</a>
-                        <a href="{{ route('transactions.index') }}?payment_status=pending" class="hover:text-blue-200">Pembayaran</a> <!-- Tab baru untuk akses page payment (filter pending) -->
-                        <a href="{{ route('services.index') }}" class="hover:text-blue-200">Layanan</a>
-                        <a href="{{ route('customers.index') }}" class="hover:text-blue-200">Pelanggan</a>
-                        <a href="{{ route('reports.index') }}" class="hover:text-blue-200">Laporan</a>
+                    <div class="text-sm">
+                        Sistem Informasi Keuangan
                     </div>
                 </div>
             </div>
@@ -94,7 +89,7 @@
 
             <!-- Recent Transactions & Quick Actions -->
             <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                <!-- Recent Transactions (Updated with Aksi column for payment) -->
+                <!-- Recent Transactions -->
                 <div class="lg:col-span-2">
                     <div class="bg-white rounded-lg shadow-md p-6">
                         <div class="flex justify-between items-center mb-6">
@@ -108,7 +103,7 @@
                             <div class="space-y-4">
                                 @foreach($recentTransactions as $transaction)
                                 <div class="flex items-center justify-between p-4 border border-gray-200 rounded-lg">
-                                    <div class="flex items-center space-x-4 flex-grow">
+                                    <div class="flex items-center space-x-4">
                                         <div class="bg-gray-100 p-2 rounded-full">
                                             <i class="fas fa-receipt text-gray-600"></i>
                                         </div>
@@ -117,19 +112,12 @@
                                             <p class="text-sm text-gray-600">{{ $transaction->customer->name }} - {{ $transaction->service->name }}</p>
                                         </div>
                                     </div>
-                                    <div class="text-right min-w-[150px]">
+                                    <div class="text-right">
                                         <p class="font-bold text-green-600">Rp {{ number_format($transaction->total_amount, 0, ',', '.') }}</p>
                                         <span class="inline-block px-2 py-1 text-xs rounded-full
                                             {{ $transaction->payment_status == 'paid' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800' }}">
-                                            {{ ucfirst($transaction->payment_status) }}
+                                            {{ $transaction->payment_status }}
                                         </span>
-                                    </div>
-                                    <div class="ml-4">
-                                        @if($transaction->payment_status == 'pending' && $transaction->payment_method == 'midtrans')
-                                            <a href="{{ route('transactions.payment', $transaction) }}" class="btn bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600 text-sm">
-                                                Bayar
-                                            </a>
-                                        @endif
                                     </div>
                                 </div>
                                 @endforeach
@@ -143,7 +131,7 @@
                     </div>
                 </div>
 
-                <!-- Quick Actions (Updated with Kelola Pembayaran) -->
+                <!-- Quick Actions -->
                 <div class="space-y-6">
                     <!-- Quick Actions Card -->
                     <div class="bg-white rounded-lg shadow-md p-6">
@@ -163,11 +151,6 @@
                                class="flex items-center space-x-3 p-3 bg-purple-50 text-purple-700 rounded-lg hover:bg-purple-100 transition duration-200">
                                 <i class="fas fa-concierge-bell"></i>
                                 <span>Tambah Layanan</span>
-                            </a>
-                            <a href="{{ route('transactions.index') }}?payment_status=pending"
-                               class="flex items-center space-x-3 p-3 bg-yellow-50 text-yellow-700 rounded-lg hover:bg-yellow-100 transition duration-200">
-                                <i class="fas fa-credit-card"></i>
-                                <span>Kelola Pembayaran</span> <!-- Tambahan untuk akses page payment -->
                             </a>
                             <a href="{{ route('reports.index') }}"
                                class="flex items-center space-x-3 p-3 bg-orange-50 text-orange-700 rounded-lg hover:bg-orange-100 transition duration-200">
