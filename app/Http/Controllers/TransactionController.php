@@ -13,11 +13,10 @@ use Illuminate\Support\Str;
 class TransactionController extends Controller
 {
     protected $midtransService;
-
-    // public function __construct(MidtransService $midtransService)
-    // {
-    //     $this->midtransService = $midtransService;
-    // }
+    public function __construct(MidtransService $midtransService)
+    {
+        $this->midtransService = $midtransService;
+    }
 
     /**
      * Display a listing of the resource.
@@ -261,12 +260,70 @@ public function store(Request $request)
      */
     public function handleMidtransNotification(Request $request)
     {
-        $result = $this->midtransService->handleNotification();
+        // Log notifikasi untuk debugging
+        \Log::info('Midtrans Notification Received', $request->all());
 
-        if ($result['success']) {
-            return response()->json($result);
-        } else {
-            return response()->json($result, 400);
+        try {
+            // Validasi notifikasi key (jika ada)
+            // $notificationKey = $request->header('X-Notification-Key');
+            // if ($notificationKey !== env('MIDTRANS_NOTIFICATION_KEY')) {
+            //     return response()->json(['error' => 'Invalid notification key'], 401);
+            // }
+
+            $orderId = $request->input('order_id');
+            $transactionStatus = $request->input('transaction_status');
+            $paymentType = $request->input('payment_type');
+            $transactionId = $request->input('transaction_id');
+
+            // Cari transaksi berdasarkan order_id
+            $transaction = Transaction::where('midtrans_order_id', $orderId)->first();
+
+            if (!$transaction) {
+                \Log::warning('Transaction not found for order_id: ' . $orderId);
+                return response()->json(['error' => 'Transaction not found'], 404);
+            }
+
+            // Map status dari Midtrans ke payment_status aplikasi
+            $paymentStatus = match($transactionStatus) {
+                'capture', 'settlement' => 'paid',
+                'pending' => 'pending',
+                'deny', 'cancel', 'failure' => 'failed',
+                'expire' => 'expired',
+                default => 'pending'
+            };
+
+            // Update transaction
+            $transaction->update([
+                'midtrans_transaction_status' => $transactionStatus,
+                'midtrans_transaction_id' => $transactionId,
+                'midtrans_payment_type' => $paymentType,
+                'payment_status' => $paymentStatus,
+                'transaction_date' => now() // Update waktu transaksi jika belum
+            ]);
+
+            \Log::info('Transaction updated', [
+                'order_id' => $orderId,
+                'payment_status' => $paymentStatus,
+                'transaction_status' => $transactionStatus
+            ]);
+
+            // Kirim WhatsApp jika pembayaran sudah paid
+            if ($paymentStatus === 'paid' && $transaction->customer->phone) {
+                try {
+                    \App\Services\FonnteService::sendReceipt($transaction);
+                } catch (\Exception $e) {
+                    \Log::error('Failed to send WhatsApp receipt', ['error' => $e->getMessage()]);
+                }
+            }
+
+            return response()->json(['status' => 'success']);
+
+        } catch (\Exception $e) {
+            \Log::error('Error handling Midtrans notification', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            return response()->json(['error' => $e->getMessage()], 500);
         }
     }
 
@@ -278,38 +335,67 @@ public function store(Request $request)
         if (!$transaction->midtrans_order_id) {
             return response()->json([
                 'success' => false,
-                'message' => 'This transaction does not have Midtrans payment'
+                'message' => 'Transaksi ini tidak memiliki order ID Midtrans'
             ], 400);
         }
 
-        $result = $this->midtransService->checkStatus($transaction->midtrans_order_id);
+        try {
+            // Cek status ke Midtrans API
+            $result = $this->midtransService->checkStatus($transaction->midtrans_order_id);
 
-        if ($result['success']) {
-            // Update transaction status based on Midtrans response
-            $status = $result['status']->transaction_status;
+            if ($result['success']) {
+                $midtransStatus = $result['status'];
+                $transactionStatus = $midtransStatus->transaction_status ?? 'pending';
 
-            $paymentStatus = match($status) {
-                'capture', 'settlement' => 'paid',
-                'pending' => 'pending',
-                'deny', 'cancel' => 'failed',
-                'expire' => 'expired',
-                default => 'pending'
-            };
+                // Map status
+                $paymentStatus = match($transactionStatus) {
+                    'capture', 'settlement' => 'paid',
+                    'pending' => 'pending',
+                    'deny', 'cancel', 'failure' => 'failed',
+                    'expire' => 'expired',
+                    default => 'pending'
+                };
 
-            $transaction->update([
-                'payment_status' => $paymentStatus,
-                'midtrans_transaction_status' => $status,
-                'midtrans_payment_type' => $result['status']->payment_type ?? null,
-                'midtrans_transaction_id' => $result['status']->transaction_id ?? null,
-            ]);
+                // Update transaksi jika status berbeda
+                if ($transaction->payment_status !== $paymentStatus) {
+                    $transaction->update([
+                        'payment_status' => $paymentStatus,
+                        'midtrans_transaction_status' => $transactionStatus,
+                        'midtrans_transaction_id' => $midtransStatus->transaction_id ?? $transaction->midtrans_transaction_id,
+                        'midtrans_payment_type' => $midtransStatus->payment_type ?? $transaction->midtrans_payment_type
+                    ]);
 
+                    \Log::info('Payment status updated via check', [
+                        'order_id' => $transaction->midtrans_order_id,
+                        'old_status' => $transaction->getOriginal('payment_status'),
+                        'new_status' => $paymentStatus
+                    ]);
+
+                    // Kirim WhatsApp jika baru dibayar
+                    if ($paymentStatus === 'paid' && $transaction->customer->phone) {
+                        try {
+                            \App\Services\FonnteService::sendReceipt($transaction);
+                        } catch (\Exception $e) {
+                            \Log::error('Failed to send WhatsApp receipt', ['error' => $e->getMessage()]);
+                        }
+                    }
+                }
+
+                return response()->json([
+                    'success' => true,
+                    'payment_status' => $paymentStatus,
+                    'transaction_status' => $transactionStatus,
+                    'message' => 'Status berhasil diperbarui'
+                ]);
+            } else {
+                return response()->json($result, 400);
+            }
+        } catch (\Exception $e) {
+            \Log::error('Error checking payment status', ['error' => $e->getMessage()]);
             return response()->json([
-                'success' => true,
-                'payment_status' => $paymentStatus,
-                'transaction_status' => $status
-            ]);
-        } else {
-            return response()->json($result, 400);
+                'success' => false,
+                'message' => 'Gagal mengecek status pembayaran: ' . $e->getMessage()
+            ], 500);
         }
     }
 }
