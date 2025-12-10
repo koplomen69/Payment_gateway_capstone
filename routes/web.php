@@ -13,7 +13,8 @@ Route::get('/', [DashboardController::class, 'index'])->name('dashboard');
 // Transaction Routes
 Route::resource('transactions', TransactionController::class);
 Route::post('/transactions/midtrans-notification', [TransactionController::class, 'handleMidtransNotification'])
-    ->name('transactions.midtrans-notification');
+    ->name('transactions.midtrans-notification')
+    ->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class]);
 Route::get('/transactions/{transaction}/check-status', [TransactionController::class, 'checkPaymentStatus'])
     ->name('transactions.check-status');
 // Tambahkan route untuk snap payment
@@ -28,6 +29,9 @@ Route::resource('customers', CustomerController::class);
 Route::get('/reports', [ReportController::class, 'index'])->name('reports.index');
 Route::get('/reports/profit-loss', [ReportController::class, 'profitLoss'])->name('reports.profit-loss');
 Route::get('/reports/export', [ReportController::class, 'export'])->name('reports.export');
+// Di dalam file routes/web.php, tambahkan baris ini (bisa di bawah route resource)
+Route::post('/transactions/{transaction}/resend-whatsapp', [TransactionController::class, 'resendWhatsapp'])
+     ->name('transactions.resend-whatsapp');
 
 // Debug route - tambahkan di web.php
 Route::get('/debug/midtrans', function() {

@@ -6,198 +6,198 @@ use App\Models\Transaction;
 use App\Models\Service;
 use App\Models\Customer;
 use App\Services\MidtransService;
+use App\Services\FonnteService; // Pastikan ini ada kalau belum
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log; // Tambah ini untuk Log
 use Illuminate\Support\Str;
 
 class TransactionController extends Controller
 {
     protected $midtransService;
+    protected $fonnteService;
 
-    public function __construct(MidtransService $midtransService)
+    public function __construct(MidtransService $midtransService, FonnteService $fonnteService)
     {
         $this->midtransService = $midtransService;
+        $this->fonnteService = $fonnteService;
     }
 
     /**
      * Display a listing of the resource.
      */
-   public function index(Request $request)
-{
-    $query = Transaction::with(['customer', 'service'])
-        ->orderBy('created_at', 'desc');
+    public function index(Request $request)
+    {
+        $query = Transaction::with(['customer', 'service'])
+            ->orderBy('created_at', 'desc');
 
-    // Filter berdasarkan status pembayaran
-    if ($request->has('payment_status') && $request->payment_status !== '') {
-        $query->where('payment_status', $request->payment_status);
+        // Filter berdasarkan status pembayaran
+        if ($request->has('payment_status') && $request->payment_status !== '') {
+            $query->where('payment_status', $request->payment_status);
+        }
+
+        // Filter berdasarkan tanggal
+        if ($request->has('start_date') && $request->start_date) {
+            $query->where('transaction_date', '>=', $request->start_date);
+        }
+
+        if ($request->has('end_date') && $request->end_date) {
+            $query->where('transaction_date', '<=', $request->end_date);
+        }
+
+        $transactions = $query->paginate(10);
+
+        // Stats
+        $successCount = Transaction::where('payment_status', 'paid')->count();
+        $pendingCount = Transaction::where('payment_status', 'pending')->count();
+        $failedCount = Transaction::whereIn('payment_status', ['failed', 'expired'])->count();
+
+        return view('transactions.index', compact(
+            'transactions',
+            'successCount',
+            'pendingCount',
+            'failedCount'
+        ));
     }
-
-    // Filter berdasarkan tanggal
-    if ($request->has('start_date') && $request->start_date) {
-        $query->where('transaction_date', '>=', $request->start_date);
-    }
-
-    if ($request->has('end_date') && $request->end_date) {
-        $query->where('transaction_date', '<=', $request->end_date);
-    }
-
-    $transactions = $query->paginate(10);
-
-    // Stats
-    $successCount = Transaction::where('payment_status', 'paid')->count();
-    $pendingCount = Transaction::where('payment_status', 'pending')->count();
-    $failedCount = Transaction::whereIn('payment_status', ['failed', 'expired'])->count();
-
-    return view('transactions.index', compact(
-        'transactions',
-        'successCount',
-        'pendingCount',
-        'failedCount'
-    ));
-}
 
     /**
      * Show the form for creating a new resource.
      */
-   public function create()
-{
-    $services = Service::active()->get();
-    $customers = Customer::orderBy('name')->get();
+    public function create()
+    {
+        $services = Service::active()->get();
+        $customers = Customer::orderBy('name')->get();
 
-    return view('transactions.create', compact('services', 'customers'));
-}
+        return view('transactions.create', compact('services', 'customers'));
+    }
 
-    /**
-     * Store a newly created resource in storage.
-     */
-   /**
- * Store a newly created resource in storage.
- */
-/**
- * Store a newly created resource in storage.
- */
-public function store(Request $request)
-{
-    $validated = $request->validate([
-        'customer_name'     => 'required|string|max:100',
-        'customer_phone'    => 'nullable|string|max:20',
-        'customer_address'  => 'nullable|string|max:500',
-        'service_id'        => 'required|exists:services,id',
-        'quantity'          => 'required|numeric|min:0.1',
-        'payment_method'    => 'required|in:cash,midtrans,transfer',
-        'notes'             => 'nullable|string|max:500'
-    ]);
-
-    \Log::info('Transaction Store Started', $validated);
-
-    try {
-        DB::beginTransaction();
-
-        // 1. Cari atau buat customer
-        $customer = Customer::firstOrCreate(
-            ['phone' => $validated['customer_phone'] ?: 'N/A-' . time()],
-            [
-                'name'    => $validated['customer_name'],
-                'address' => $validated['customer_address'] ?? '-'
-            ]
-        );
-
-        // 2. Hitung total
-        $service = Service::findOrFail($validated['service_id']);
-        $totalAmount = $service->price * $validated['quantity'];
-
-        // 3. Generate order ID yang unik
-        $orderId = 'ORD-' . Str::random(10) . '-' . time();
-
-        // 4. Buat transaksi (invoice_number akan auto-generate dari model)
-        $transaction = Transaction::create([
-            'transaction_date'  => now(),
-            'customer_id'       => $customer->id,
-            'service_id'        => $validated['service_id'],
-            'quantity'          => $validated['quantity'],
-            'price'             => $service->price,
-            'total_amount'      => $totalAmount,
-            'payment_method'    => $validated['payment_method'],
-            'payment_status'    => $validated['payment_method'] === 'cash' ? 'paid' : 'pending',
-            'notes'             => $validated['notes'] ?? null,
-            'midtrans_order_id' => $validated['payment_method'] === 'cash' ? null : $orderId,
+    public function store(Request $request)
+    {
+        $validated = $request->validate([
+            'customer_name'     => 'required|string|max:100',
+            'customer_phone'    => 'nullable|string|max:20',
+            'customer_address'  => 'nullable|string|max:500',
+            'service_id'        => 'required|exists:services,id',
+            'quantity'          => 'required|numeric|min:0.1',
+            'payment_method'    => 'required|in:cash,midtrans,transfer',
+            'notes'             => 'nullable|string|max:500'
         ]);
 
-        \Log::info('Transaction created', [
-            'transaction_id' => $transaction->id,
-            'invoice_number' => $transaction->invoice_number,
-            'order_id' => $orderId,
-            'payment_method' => $validated['payment_method']
-        ]);
+        Log::info('Transaction Store Started', $validated);
 
-        // 5. Jika Midtrans, buat snap token
-        if ($validated['payment_method'] === 'midtrans') {
-            \Log::info('Processing Midtrans payment');
+        try {
+            DB::beginTransaction();
 
-            $response = $this->midtransService->createTransaction($transaction);
+            // 1. Cari atau buat customer
+            $customer = Customer::firstOrCreate(
+                ['phone' => $validated['customer_phone'] ?: 'N/A-' . time()],
+                [
+                    'name'    => $validated['customer_name'],
+                    'address' => $validated['customer_address'] ?? '-'
+                ]
+            );
 
-            \Log::info('Midtrans response', $response);
+            // 2. Hitung total
+            $service = Service::findOrFail($validated['service_id']);
+            $totalAmount = $service->price * $validated['quantity'];
 
-            if (!$response['success']) {
-                throw new \Exception('Gagal generate token Midtrans: ' . $response['message']);
+            // 3. Generate order ID yang unik
+            $orderId = 'ORD-' . Str::random(10) . '-' . time();
+
+            // 4. Buat transaksi (invoice_number akan auto-generate dari model)
+            $transaction = Transaction::create([
+                'transaction_date'  => now(),
+                'customer_id'       => $customer->id,
+                'service_id'        => $validated['service_id'],
+                'quantity'          => $validated['quantity'],
+                'price'             => $service->price,
+                'total_amount'      => $totalAmount,
+                'payment_method'    => $validated['payment_method'],
+                'payment_status'    => $validated['payment_method'] === 'cash' ? 'paid' : 'pending',
+                'notes'             => $validated['notes'] ?? null,
+                'midtrans_order_id' => $validated['payment_method'] === 'cash' ? null : $orderId,
+            ]);
+
+            Log::info('Transaction created', [
+                'transaction_id' => $transaction->id,
+                'invoice_number' => $transaction->invoice_number,
+                'order_id' => $orderId,
+                'payment_method' => $validated['payment_method']
+            ]);
+
+            // 5. Jika Midtrans, buat snap token
+            if ($validated['payment_method'] === 'midtrans') {
+                Log::info('Processing Midtrans payment');
+
+                $response = $this->midtransService->createTransaction($transaction);
+
+                Log::info('Midtrans response', $response);
+
+                if (!$response['success']) {
+                    throw new \Exception('Gagal generate token Midtrans: ' . $response['message']);
+                }
+
+                $transaction->update([
+                    'midtrans_snap_token'  => $response['snap_token'],
+                    'midtrans_payment_url' => $response['payment_url'],
+                ]);
+
+                Log::info('Transaction updated with snap token', [
+                    'snap_token' => substr($response['snap_token'], 0, 50) . '...'
+                ]);
+
+                DB::commit();
+
+                Log::info('Redirecting to snap payment page');
+
+                // Redirect ke halaman snap payment
+                return redirect()->route('transactions.snap', $transaction);
             }
-
-            $transaction->update([
-                'midtrans_snap_token'  => $response['snap_token'],
-                'midtrans_payment_url' => $response['payment_url'],
-            ]);
-
-            \Log::info('Transaction updated with snap token', [
-                'snap_token' => substr($response['snap_token'], 0, 50) . '...'
-            ]);
 
             DB::commit();
 
-            \Log::info('Redirecting to snap payment page');
+            // Kirim resi otomatis untuk cash & transfer
+            $this->generateAndSendResi($transaction);
 
-            // Redirect ke halaman snap payment
-            return redirect()->route('transactions.snap', $transaction);
+            Log::info('Transaction completed & WhatsApp receipt sent', [
+                'invoice' => $transaction->invoice_number
+            ]);
+
+            return redirect()->route('transactions.index')
+                ->with('success', 'Transaksi berhasil! Resi telah dikirim ke WhatsApp pelanggan.');
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Transaction store error', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            return back()->withErrors(['error' => 'Gagal membuat transaksi: ' . $e->getMessage()])->withInput();
+        }
+    }
+
+    public function snapPayment(Transaction $transaction)
+    {
+        // Debug info
+        Log::info('Snap Payment Accessed', [
+            'transaction_id' => $transaction->id,
+            'order_id' => $transaction->midtrans_order_id,
+            'snap_token' => $transaction->midtrans_snap_token ? 'exists' : 'missing',
+            'payment_method' => $transaction->payment_method,
+            'payment_status' => $transaction->payment_status
+        ]);
+
+        if ($transaction->payment_method !== 'midtrans') {
+            return redirect()->route('transactions.index')
+                ->with('error', 'Transaksi ini bukan pembayaran Midtrans.');
         }
 
-        DB::commit();
-        \Log::info('Cash transaction completed');
-        return redirect()->route('transactions.index')->with('success', 'Transaksi berhasil dibuat!');
+        if (!$transaction->midtrans_snap_token) {
+            return redirect()->route('transactions.show', $transaction)
+                ->with('error', 'Token pembayaran tidak tersedia. Silakan hubungi admin.');
+        }
 
-    } catch (\Exception $e) {
-        DB::rollBack();
-        \Log::error('Transaction store error', [
-            'error' => $e->getMessage(),
-            'trace' => $e->getTraceAsString()
-        ]);
-        return back()->withErrors(['error' => 'Gagal: ' . $e->getMessage()])->withInput();
+        return view('transactions.snap', compact('transaction'));
     }
-}
-
-
-public function snapPayment(Transaction $transaction)
-{
-    // Debug info
-    \Log::info('Snap Payment Accessed', [
-        'transaction_id' => $transaction->id,
-        'order_id' => $transaction->midtrans_order_id,
-        'snap_token' => $transaction->midtrans_snap_token ? 'exists' : 'missing',
-        'payment_method' => $transaction->payment_method,
-        'payment_status' => $transaction->payment_status
-    ]);
-
-    if ($transaction->payment_method !== 'midtrans') {
-        return redirect()->route('transactions.index')
-            ->with('error', 'Transaksi ini bukan pembayaran Midtrans.');
-    }
-
-    if (!$transaction->midtrans_snap_token) {
-        return redirect()->route('transactions.show', $transaction)
-            ->with('error', 'Token pembayaran tidak tersedia. Silakan hubungi admin.');
-    }
-
-    return view('transactions.snap', compact('transaction'));
-}
-
 
     /**
      * Display the specified resource.
@@ -257,7 +257,6 @@ public function snapPayment(Transaction $transaction)
 
             return redirect()->route('transactions.show', $transaction)
                 ->with('success', 'Transaksi berhasil diperbarui!');
-
         } catch (\Exception $e) {
             DB::rollBack();
 
@@ -277,7 +276,6 @@ public function snapPayment(Transaction $transaction)
 
             return redirect()->route('transactions.index')
                 ->with('success', 'Transaksi berhasil dihapus!');
-
         } catch (\Exception $e) {
             return redirect()->back()
                 ->with('error', 'Gagal menghapus transaksi: ' . $e->getMessage());
@@ -291,11 +289,21 @@ public function snapPayment(Transaction $transaction)
     {
         $result = $this->midtransService->handleNotification();
 
+        // Jika sukses update status dari MidtransService
         if ($result['success']) {
-            return response()->json($result);
-        } else {
-            return response()->json($result, 400);
+            $transaction = $result['transaction'] ?? null; // Pastikan MidtransService return transaction
+
+            if ($transaction &&
+                $transaction->wasChanged('payment_status') &&
+                $transaction->payment_status === 'paid') {
+
+                $this->generateAndSendResi($transaction);
+            }
+
+            return response()->json(['status' => 'success']);
         }
+
+        return response()->json(['status' => 'failed', 'message' => $result['message'] ?? 'Unknown error'], 400);
     }
 
     /**
@@ -316,7 +324,7 @@ public function snapPayment(Transaction $transaction)
             // Update transaction status based on Midtrans response
             $status = $result['status']->transaction_status;
 
-            $paymentStatus = match($status) {
+            $paymentStatus = match ($status) {
                 'capture', 'settlement' => 'paid',
                 'pending' => 'pending',
                 'deny', 'cancel' => 'failed',
@@ -341,6 +349,59 @@ public function snapPayment(Transaction $transaction)
         }
     }
 
+    /**
+     * Kirim resi dalam bentuk pesan teks WhatsApp (via Fonnte)
+     */
+    protected function generateAndSendResi(Transaction $transaction)
+    {
+        // 1. Cek apakah customer punya nomor HP
+        if (!$transaction->customer || !$transaction->customer->phone) {
+            Log::info('Skip kirim resi WA: nomor HP kosong', [
+                'transaction_id' => $transaction->id ?? 'unknown'
+            ]);
+            return;
+        }
 
+        // 2. Cek apakah status sudah PAID
+        if ($transaction->payment_status !== 'paid') {
+            Log::info('Skip kirim resi WA: status bukan paid', [
+                'transaction_id' => $transaction->id,
+                'status' => $transaction->payment_status
+            ]);
+            return;
+        }
 
+        // 3. Kirim pesan teks cantik via Fonnte
+        $sent = $this->fonnteService->sendResiText($transaction->customer->phone, $transaction);
+
+        if ($sent) {
+            Log::info('Resi WhatsApp berhasil dikirim', [
+                'invoice'     => $transaction->invoice_number,
+                'customer'    => $transaction->customer->name,
+                'phone'       => $transaction->customer->phone,
+                'total'       => $transaction->total_amount
+            ]);
+        } else {
+            Log::warning('Gagal kirim resi WhatsApp', [
+                'invoice' => $transaction->invoice_number,
+                'phone'   => $transaction->customer->phone
+            ]);
+        }
+    }
+
+    /**
+     * Kirim ulang resi WhatsApp dari halaman detail
+     */
+    public function resendWhatsapp(Transaction $transaction)
+    {
+        // Cek apakah sudah pernah dibayar
+        if ($transaction->payment_status !== 'paid') {
+            return back()->with('error', 'Resi hanya bisa dikirim ulang untuk transaksi yang sudah dibayar (PAID).');
+        }
+
+        // Kirim ulang
+        $this->generateAndSendResi($transaction);
+
+        return back()->with('success', 'Resi berhasil dikirim ulang ke WhatsApp pelanggan!');
+    }
 }
