@@ -88,14 +88,36 @@ class TransactionController extends Controller
         try {
             DB::beginTransaction();
 
-            // 1. Cari atau buat customer
+            // 1. Normalisasi nomor HP dan cari/ buat customer
+            $rawPhone = $validated['customer_phone'] ?? '';
+            $normalizedPhone = preg_replace('/\D+/', '', $rawPhone);
+            $phoneKey = $normalizedPhone !== '' ? $normalizedPhone : 'N/A-' . time();
+
             $customer = Customer::firstOrCreate(
-                ['phone' => $validated['customer_phone'] ?: 'N/A-' . time()],
+                ['phone' => $phoneKey],
                 [
                     'name'    => $validated['customer_name'],
                     'address' => $validated['customer_address'] ?? '-'
                 ]
             );
+
+            // Jika data customer sudah ada tapi nama/ alamat berbeda, perbarui
+            $needsUpdate = false;
+            $updateData = [];
+            if (($customer->name ?? '') !== $validated['customer_name']) {
+                $updateData['name'] = $validated['customer_name'];
+                $needsUpdate = true;
+            }
+            $incomingAddress = $validated['customer_address'] ?? '-';
+            if (($customer->address ?? '-') !== $incomingAddress) {
+                $updateData['address'] = $incomingAddress;
+                $needsUpdate = true;
+            }
+
+            if ($needsUpdate) {
+                $customer->update($updateData);
+                Log::info('Customer updated with new data', ['customer_id' => $customer->id, 'update' => $updateData]);
+            }
 
             // 2. Hitung total
             $service = Service::findOrFail($validated['service_id']);
