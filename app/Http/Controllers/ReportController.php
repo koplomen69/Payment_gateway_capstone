@@ -4,15 +4,41 @@ namespace App\Http\Controllers;
 
 use App\Models\Transaction;
 use Illuminate\Http\Request;
+use Carbon\Carbon;
 
 class ReportController extends Controller
 {
     /**
      * Display reports index page.
      */
-    public function index()
+    public function index(Request $request)
     {
-        return view('reports.index');
+        // Set default period to current month
+        $startDate = $request->get('start_date', date('Y-m-01'));
+        $endDate = $request->get('end_date', date('Y-m-d'));
+
+        // Get paid transactions within the period
+        $transactions = Transaction::with(['customer', 'service'])
+            ->whereBetween('transaction_date', [$startDate, $endDate])
+            ->where('payment_status', 'paid')
+            ->orderBy('transaction_date', 'desc')
+            ->get();
+
+        // Calculate metrics
+        $totalRevenue = $transactions->sum('total_amount');
+        $totalTransactions = $transactions->count();
+        $operationalCosts = $totalRevenue * 0.6; // 60% operational costs assumption
+        $netProfit = $totalRevenue - $operationalCosts;
+
+        return view('reports.index', compact(
+            'transactions',
+            'totalRevenue',
+            'totalTransactions',
+            'operationalCosts',
+            'netProfit',
+            'startDate',
+            'endDate'
+        ));
     }
 
     /**
@@ -21,12 +47,13 @@ class ReportController extends Controller
     public function profitLoss(Request $request)
     {
         // Gunakan PHP native date functions
-        $startDate = $request->get('start_date', date('Y-m-01')); // First day of current month
-        $endDate = $request->get('end_date', date('Y-m-d')); // Today
+        $startDate = $request->get('start_date', date('Y-m-01'));
+        $endDate = $request->get('end_date', date('Y-m-d'));
 
         $transactions = Transaction::with(['customer', 'service'])
             ->whereBetween('transaction_date', [$startDate, $endDate])
             ->where('payment_status', 'paid')
+            ->orderBy('transaction_date', 'desc')
             ->get();
 
         $totalRevenue = $transactions->sum('total_amount');
@@ -52,15 +79,117 @@ class ReportController extends Controller
      */
     public function export(Request $request)
     {
-        $type = $request->get('type', 'profit-loss');
+        $type = $request->get('type', 'pdf');
         $startDate = $request->get('start_date', date('Y-m-01'));
         $endDate = $request->get('end_date', date('Y-m-d'));
 
-        // Untuk sementara redirect ke profit-loss
-        // Nanti bisa diimplementasi export PDF/Excel
-        return redirect()->route('reports.profit-loss', [
-            'start_date' => $startDate,
-            'end_date' => $endDate
-        ])->with('info', 'Fitur export akan segera tersedia.');
+        // Get data for export
+        $transactions = Transaction::with(['customer', 'service'])
+            ->whereBetween('transaction_date', [$startDate, $endDate])
+            ->where('payment_status', 'paid')
+            ->orderBy('transaction_date', 'desc')
+            ->get();
+
+        $totalRevenue = $transactions->sum('total_amount');
+        $totalTransactions = $transactions->count();
+        $operationalCosts = $totalRevenue * 0.6;
+        $netProfit = $totalRevenue - $operationalCosts;
+
+        // Return data for API (JavaScript will handle the export)
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'transactions' => $transactions,
+                'summary' => [
+                    'total_revenue' => $totalRevenue,
+                    'total_transactions' => $totalTransactions,
+                    'operational_costs' => $operationalCosts,
+                    'net_profit' => $netProfit,
+                    'profit_margin' => $totalRevenue > 0 ? ($netProfit / $totalRevenue) * 100 : 0,
+                    'period' => [
+                        'start' => $startDate,
+                        'end' => $endDate
+                    ]
+                ]
+            ]
+        ]);
+    }
+
+    /**
+     * Get report data for API (for charts)
+     */
+    public function getReportData(Request $request)
+    {
+        $startDate = $request->get('start_date', date('Y-m-01'));
+        $endDate = $request->get('end_date', date('Y-m-d'));
+        $type = $request->get('type', 'daily'); // daily, weekly, monthly
+
+        // Get transactions data
+        $transactions = Transaction::with(['customer', 'service'])
+            ->whereBetween('transaction_date', [$startDate, $endDate])
+            ->where('payment_status', 'paid')
+            ->orderBy('transaction_date', 'asc')
+            ->get();
+
+        // Calculate daily revenue for chart
+        $dailyData = [];
+        $currentDate = Carbon::parse($startDate);
+        $end = Carbon::parse($endDate);
+
+        while ($currentDate->lte($end)) {
+            $dateStr = $currentDate->format('Y-m-d');
+            $dailyTotal = $transactions
+                ->where('transaction_date', $dateStr)
+                ->sum('total_amount');
+
+            $dailyData[] = [
+                'date' => $currentDate->format('d M'),
+                'revenue' => $dailyTotal,
+                'transactions' => $transactions->where('transaction_date', $dateStr)->count()
+            ];
+
+            $currentDate->addDay();
+        }
+
+        // Calculate service distribution
+        $serviceData = [];
+        $services = $transactions->groupBy('service_id');
+
+        foreach ($services as $serviceId => $serviceTransactions) {
+            $service = $serviceTransactions->first()->service;
+            $serviceData[] = [
+                'name' => $service->name,
+                'revenue' => $serviceTransactions->sum('total_amount'),
+                'transactions' => $serviceTransactions->count(),
+                'percentage' => $transactions->sum('total_amount') > 0
+                    ? round(($serviceTransactions->sum('total_amount') / $transactions->sum('total_amount')) * 100, 1)
+                    : 0
+            ];
+        }
+
+        // Payment method distribution
+        $paymentData = [
+            'cash' => $transactions->where('payment_method', 'cash')->count(),
+            'midtrans' => $transactions->where('payment_method', 'midtrans')->count(),
+            'transfer' => $transactions->where('payment_method', 'transfer')->count()
+        ];
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'daily' => $dailyData,
+                'services' => $serviceData,
+                'payments' => $paymentData,
+                'summary' => [
+                    'total_revenue' => $transactions->sum('total_amount'),
+                    'total_transactions' => $transactions->count(),
+                    'avg_transaction' => $transactions->count() > 0
+                        ? round($transactions->sum('total_amount') / $transactions->count())
+                        : 0,
+                    'operational_costs' => $transactions->sum('total_amount') * 0.6,
+                    'net_profit' => $transactions->sum('total_amount') * 0.4
+                ]
+            ]
+        ]);
     }
 }

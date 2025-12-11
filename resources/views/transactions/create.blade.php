@@ -277,14 +277,6 @@
                                     <span class="flex-1 font-medium">Midtrans (QRIS/Transfer)</span>
                                     <span class="bg-blue-100 text-blue-800 text-xs px-3 py-1 rounded-full font-bold">DIGITAL</span>
                                 </label>
-
-                                <label class="flex items-center space-x-3 p-3 border border-gray-300 rounded-lg cursor-pointer hover:bg-purple-50 transition duration-200">
-                                    <input type="radio" name="payment_method" value="transfer" class="text-blue-600 focus:ring-blue-500"
-                                           {{ old('payment_method') == 'transfer' ? 'checked' : '' }}>
-                                    <i class="fas fa-university text-purple-600 text-xl"></i>
-                                    <span class="flex-1 font-medium">Transfer Bank Manual</span>
-                                    <span class="bg-purple-100 text-purple-800 text-xs px-3 py-1 rounded-full font-bold">MANUAL</span>
-                                </label>
                             </div>
                             @error('payment_method')
                                 <p class="mt-1 text-sm text-red-600">{{ $message }}</p>

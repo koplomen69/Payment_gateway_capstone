@@ -10,6 +10,7 @@ use App\Services\FonnteService; // Pastikan ini ada kalau belum
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log; // Tambah ini untuk Log
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
 class TransactionController extends Controller
@@ -136,21 +137,33 @@ class TransactionController extends Controller
                     throw new \Exception('Gagal generate token Midtrans: ' . $response['message']);
                 }
 
-                $transaction->update([
-                    'midtrans_snap_token'  => $response['snap_token'],
+                // Prepare update data; midtrans_snap_token might not exist in DB
+                $updateData = [
                     'midtrans_payment_url' => $response['payment_url'],
-                ]);
+                    'midtrans_transaction_status' => $transaction->midtrans_transaction_status ?? null,
+                ];
 
-                Log::info('Transaction updated with snap token', [
-                    'snap_token' => substr($response['snap_token'], 0, 50) . '...'
+                if (Schema::hasColumn('transactions', 'midtrans_snap_token')) {
+                    $updateData['midtrans_snap_token'] = $response['snap_token'] ?? null;
+                }
+
+                $transaction->update($updateData);
+
+                Log::info('Transaction updated with midtrans response', [
+                    'has_snap_column' => Schema::hasColumn('transactions', 'midtrans_snap_token') ? true : false,
+                    'payment_url' => $response['payment_url'] ?? null,
                 ]);
 
                 DB::commit();
 
-                Log::info('Redirecting to snap payment page');
+                Log::info('Redirecting to payment gateway');
 
-                // Redirect ke halaman snap payment
-                return redirect()->route('transactions.snap', $transaction);
+                // If snap token saved, redirect to internal snap page (uses snap.js). Otherwise redirect directly to Midtrans payment URL.
+                if (!empty($updateData['midtrans_snap_token'])) {
+                    return redirect()->route('transactions.snap', $transaction);
+                }
+
+                return redirect($response['payment_url']);
             }
 
             DB::commit();
@@ -313,7 +326,7 @@ class TransactionController extends Controller
 
             if ($result['success']) {
                 $midtransStatus = $result['status'];
-                $transactionStatus = $midtransStatus->transaction_status ?? 'pending';
+                $transactionStatus = is_array($midtransStatus) ? ($midtransStatus['transaction_status'] ?? 'pending') : ($midtransStatus->transaction_status ?? 'pending');
 
             $paymentStatus = match($transactionStatus) {
                 'capture', 'settlement' => 'paid',
@@ -328,11 +341,11 @@ class TransactionController extends Controller
                     $transaction->update([
                         'payment_status' => $paymentStatus,
                         'midtrans_transaction_status' => $transactionStatus,
-                        'midtrans_transaction_id' => $midtransStatus->transaction_id ?? $transaction->midtrans_transaction_id,
-                        'midtrans_payment_type' => $midtransStatus->payment_type ?? $transaction->midtrans_payment_type
+                        'midtrans_transaction_id' => $midtransStatus['transaction_id'] ?? $transaction->midtrans_transaction_id,
+                        'midtrans_payment_type' => $midtransStatus['payment_type'] ?? $transaction->midtrans_payment_type
                     ]);
 
-                    \Log::info('Payment status updated via check', [
+                    Log::info('Payment status updated via check', [
                         'order_id' => $transaction->midtrans_order_id,
                         'old_status' => $transaction->getOriginal('payment_status'),
                         'new_status' => $paymentStatus
@@ -358,7 +371,7 @@ class TransactionController extends Controller
                 return response()->json($result, 400);
             }
         } catch (\Exception $e) {
-            \Log::error('Error checking payment status', ['error' => $e->getMessage()]);
+            Log::error('Error checking payment status', ['error' => $e->getMessage()]);
             return response()->json([
                 'success' => false,
                 'message' => 'Gagal mengecek status pembayaran: ' . $e->getMessage()
