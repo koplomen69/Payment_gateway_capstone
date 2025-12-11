@@ -2,120 +2,156 @@
 
 namespace App\Services;
 
-use Midtrans\Config;
-use Midtrans\Snap;
-use Midtrans\Notification;
+use App\Models\Transaction;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 class MidtransService
 {
+    protected $serverKey;
+    protected $isProduction;
+    protected $baseUrl;
+
     public function __construct()
     {
-        Config::$serverKey = config('midtrans.server_key');
-        Config::$clientKey = config('midtrans.client_key');
-        Config::$isProduction = config('midtrans.is_production');
-        Config::$isSanitized = config('midtrans.is_sanitized');
-        Config::$is3ds = config('midtrans.is_3ds');
+        $this->serverKey = env('MIDTRANS_SERVER_KEY');
+        $this->isProduction = filter_var(env('MIDTRANS_IS_PRODUCTION', false), FILTER_VALIDATE_BOOLEAN);
+        $this->baseUrl = $this->isProduction ? 'https://api.midtrans.com/v2' : 'https://api.sandbox.midtrans.com/v2';
     }
 
-    /**
-     * Create Midtrans transaction and get payment URL/Snap token
-     */
-    public function createTransaction($transaction)
+    public function createTransaction(Transaction $transaction)
     {
-        // Pastikan amount dalam integer (Midtrans requirement)
-        $grossAmount = (int) round($transaction->total_amount);
-
-        $params = [
-            'transaction_details' => [
-                'order_id' => $transaction->midtrans_order_id,
-                'gross_amount' => $grossAmount,
-            ],
-            'item_details' => [
-                [
-                    'id' => $transaction->service->id,
-                    'price' => (int) round($transaction->price),
-                    'quantity' => (float) $transaction->quantity,
-                    'name' => substr($transaction->service->name, 0, 50), // Max 50 chars
-                    'category' => 'Laundry Service',
-                ]
-            ],
-            'customer_details' => [
-                'first_name' => substr($transaction->customer->name ?? 'Pelanggan', 0, 255),
-                'email' => $transaction->customer->email ?? 'customer@example.com',
-                'phone' => $transaction->customer->phone ?? '000000000000',
-            ],
-            'expiry' => [
-                'start_time' => date('Y-m-d H:i:s O'),
-                'unit' => 'hours',
-                'duration' => 24, // Expire dalam 24 jam
-            ],
-            'callbacks' => [
-                'finish' => route('transactions.show', $transaction),
-            ]
-        ];
-
         try {
-            $snapToken = Snap::getSnapToken($params);
+            $snapUrl = $this->isProduction
+                ? 'https://app.midtrans.com/snap/v1/transactions'
+                : 'https://app.sandbox.midtrans.com/snap/v1/transactions';
 
-            return [
-                'success' => true,
-                'snap_token' => $snapToken,
-                'payment_url' => "https://app.sandbox.midtrans.com/snap/v2/vtweb/{$snapToken}"
+            $payload = [
+                'transaction_details' => [
+                    'order_id' => $transaction->midtrans_order_id,
+                    'gross_amount' => (int) $transaction->total_amount,
+                ],
+                'customer_details' => [
+                    'first_name' => $transaction->customer->name ?? 'Customer',
+                    'phone' => $transaction->customer->phone ?? '',
+                ],
             ];
-        } catch (\Exception $e) {
-            \Log::error('Midtrans Error: ' . $e->getMessage());
+
+            $response = Http::withBasicAuth($this->serverKey, '')->post($snapUrl, $payload);
+
+            if ($response->successful()) {
+                $body = $response->json();
+                return [
+                    'success' => true,
+                    'snap_token' => $body['token'] ?? null,
+                    'payment_url' => $body['redirect_url'] ?? $body['payment_url'] ?? null,
+                    'response' => $body,
+                ];
+            }
+
             return [
                 'success' => false,
-                'message' => $e->getMessage()
+                'message' => $response->body(),
+                'status' => $response->status(),
+            ];
+        } catch (\Exception $e) {
+            Log::error('Midtrans createTransaction error', ['error' => $e->getMessage()]);
+            return [
+                'success' => false,
+                'message' => $e->getMessage(),
+            ];
+        }
+    }
+
+    public function checkStatus(string $orderId)
+    {
+        try {
+            $url = $this->baseUrl . '/' . $orderId . '/status';
+            $response = Http::withBasicAuth($this->serverKey, '')->get($url);
+
+            if ($response->successful()) {
+                return [
+                    'success' => true,
+                    'status' => $response->json(),
+                ];
+            }
+
+            return [
+                'success' => false,
+                'message' => $response->body(),
+            ];
+        } catch (\Exception $e) {
+            Log::error('Midtrans checkStatus error', ['error' => $e->getMessage()]);
+            return [
+                'success' => false,
+                'message' => $e->getMessage(),
             ];
         }
     }
 
     /**
-     * Handle Midtrans notification (webhook)
+     * Handle incoming Midtrans notification payload (array or Request)
+     * Returns array ['success' => bool, 'message' => string]
      */
-    public function handleNotification()
+    public function handleNotification($payload = null)
     {
         try {
-            $notification = new Notification();
+            if ($payload instanceof Request) {
+                $data = $payload->all();
+            } elseif (is_array($payload)) {
+                $data = $payload;
+            } else {
+                $data = request()->all();
+            }
 
-            $transaction = \App\Models\Transaction::where('midtrans_order_id', $notification->order_id)->first();
+            Log::info('MidtransService::handleNotification', $data);
+
+            $orderId = $data['order_id'] ?? null;
+            $transactionStatus = $data['transaction_status'] ?? ($data['status_code'] ?? null);
+            $paymentType = $data['payment_type'] ?? null;
+            $transactionId = $data['transaction_id'] ?? null;
+
+            if (!$orderId) {
+                return ['success' => false, 'message' => 'order_id missing'];
+            }
+
+            $transaction = Transaction::where('midtrans_order_id', $orderId)->first();
 
             if (!$transaction) {
                 return ['success' => false, 'message' => 'Transaction not found'];
             }
 
-            $status = $notification->transaction_status;
-            $paymentStatus = match ($status) {
+            $mapped = match($transactionStatus) {
                 'capture', 'settlement' => 'paid',
                 'pending' => 'pending',
-                'deny', 'cancel' => 'failed',
+                'deny', 'cancel', 'failure' => 'failed',
                 'expire' => 'expired',
                 default => 'pending'
             };
 
             $transaction->update([
-                'payment_status' => $paymentStatus,
-                'midtrans_transaction_status' => $status,
-                'midtrans_payment_type' => $notification->payment_type,
-                'midtrans_transaction_id' => $notification->transaction_id,
+                'midtrans_transaction_status' => $transactionStatus,
+                'midtrans_transaction_id' => $transactionId,
+                'midtrans_payment_type' => $paymentType,
+                'payment_status' => $mapped,
+                'transaction_date' => now(),
             ]);
 
-            return ['success' => true, 'message' => 'Notification handled successfully'];
-        } catch (\Exception $e) {
-            return ['success' => false, 'message' => $e->getMessage()];
-        }
-    }
+            // Optionally send receipt when paid - keep simple (non-blocking recommended)
+            if ($mapped === 'paid') {
+                try {
+                    // lazy-load fonnte service to avoid hard dependency here
+                    $fonnte = app()->make(FonnteService::class);
+                    $fonnte->sendResiText($transaction->customer->phone ?? '', $transaction);
+                } catch (\Throwable $e) {
+                    Log::warning('Failed to send WA after midtrans notification', ['error' => $e->getMessage()]);
+                }
+            }
 
-    /**
-     * Check transaction status
-     */
-    public function checkStatus($orderId)
-    {
-        try {
-            $status = \Midtrans\Transaction::status($orderId);
-            return ['success' => true, 'status' => $status];
+            return ['success' => true, 'message' => 'Transaction updated'];
         } catch (\Exception $e) {
+            Log::error('MidtransService::handleNotification error', ['error' => $e->getMessage()]);
             return ['success' => false, 'message' => $e->getMessage()];
         }
     }

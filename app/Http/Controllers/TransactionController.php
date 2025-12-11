@@ -10,13 +10,13 @@ use App\Services\FonnteService; // Pastikan ini ada kalau belum
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log; // Tambah ini untuk Log
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
 class TransactionController extends Controller
 {
     protected $midtransService;
     protected $fonnteService;
-
     public function __construct(MidtransService $midtransService, FonnteService $fonnteService)
     {
         $this->midtransService = $midtransService;
@@ -137,21 +137,33 @@ class TransactionController extends Controller
                     throw new \Exception('Gagal generate token Midtrans: ' . $response['message']);
                 }
 
-                $transaction->update([
-                    'midtrans_snap_token'  => $response['snap_token'],
+                // Prepare update data; midtrans_snap_token might not exist in DB
+                $updateData = [
                     'midtrans_payment_url' => $response['payment_url'],
-                ]);
+                    'midtrans_transaction_status' => $transaction->midtrans_transaction_status ?? null,
+                ];
 
-                Log::info('Transaction updated with snap token', [
-                    'snap_token' => substr($response['snap_token'], 0, 50) . '...'
+                if (Schema::hasColumn('transactions', 'midtrans_snap_token')) {
+                    $updateData['midtrans_snap_token'] = $response['snap_token'] ?? null;
+                }
+
+                $transaction->update($updateData);
+
+                Log::info('Transaction updated with midtrans response', [
+                    'has_snap_column' => Schema::hasColumn('transactions', 'midtrans_snap_token') ? true : false,
+                    'payment_url' => $response['payment_url'] ?? null,
                 ]);
 
                 DB::commit();
 
-                Log::info('Redirecting to snap payment page');
+                Log::info('Redirecting to payment gateway');
 
-                // Redirect ke halaman snap payment
-                return redirect()->route('transactions.snap', $transaction);
+                // If snap token saved, redirect to internal snap page (uses snap.js). Otherwise redirect directly to Midtrans payment URL.
+                if (!empty($updateData['midtrans_snap_token'])) {
+                    return redirect()->route('transactions.snap', $transaction);
+                }
+
+                return redirect($response['payment_url']);
             }
 
             DB::commit();
@@ -289,21 +301,11 @@ class TransactionController extends Controller
     {
         $result = $this->midtransService->handleNotification();
 
-        // Jika sukses update status dari MidtransService
         if ($result['success']) {
-            $transaction = $result['transaction'] ?? null; // Pastikan MidtransService return transaction
-
-            if ($transaction &&
-                $transaction->wasChanged('payment_status') &&
-                $transaction->payment_status === 'paid') {
-
-                $this->generateAndSendResi($transaction);
-            }
-
-            return response()->json(['status' => 'success']);
+            return response()->json($result);
+        } else {
+            return response()->json($result, 400);
         }
-
-        return response()->json(['status' => 'failed', 'message' => $result['message'] ?? 'Unknown error'], 400);
     }
 
     /**
@@ -314,38 +316,66 @@ class TransactionController extends Controller
         if (!$transaction->midtrans_order_id) {
             return response()->json([
                 'success' => false,
-                'message' => 'This transaction does not have Midtrans payment'
+                'message' => 'Transaksi ini tidak memiliki order ID Midtrans'
             ], 400);
         }
 
-        $result = $this->midtransService->checkStatus($transaction->midtrans_order_id);
+        try {
+            // Cek status ke Midtrans API
+            $result = $this->midtransService->checkStatus($transaction->midtrans_order_id);
 
-        if ($result['success']) {
-            // Update transaction status based on Midtrans response
-            $status = $result['status']->transaction_status;
+            if ($result['success']) {
+                $midtransStatus = $result['status'];
+                $transactionStatus = is_array($midtransStatus) ? ($midtransStatus['transaction_status'] ?? 'pending') : ($midtransStatus->transaction_status ?? 'pending');
 
-            $paymentStatus = match ($status) {
+            $paymentStatus = match($transactionStatus) {
                 'capture', 'settlement' => 'paid',
                 'pending' => 'pending',
-                'deny', 'cancel' => 'failed',
+                'deny', 'cancel', 'failure' => 'failed',
                 'expire' => 'expired',
                 default => 'pending'
             };
 
-            $transaction->update([
-                'payment_status' => $paymentStatus,
-                'midtrans_transaction_status' => $status,
-                'midtrans_payment_type' => $result['status']->payment_type ?? null,
-                'midtrans_transaction_id' => $result['status']->transaction_id ?? null,
-            ]);
+                // Update transaksi jika status berbeda
+                if ($transaction->payment_status !== $paymentStatus) {
+                    $transaction->update([
+                        'payment_status' => $paymentStatus,
+                        'midtrans_transaction_status' => $transactionStatus,
+                        'midtrans_transaction_id' => $midtransStatus['transaction_id'] ?? $transaction->midtrans_transaction_id,
+                        'midtrans_payment_type' => $midtransStatus['payment_type'] ?? $transaction->midtrans_payment_type
+                    ]);
 
+                    Log::info('Payment status updated via check', [
+                        'order_id' => $transaction->midtrans_order_id,
+                        'old_status' => $transaction->getOriginal('payment_status'),
+                        'new_status' => $paymentStatus
+                    ]);
+
+                    // Kirim WhatsApp jika baru dibayar
+                    if ($paymentStatus === 'paid' && $transaction->customer->phone) {
+                        try {
+                            $this->fonnteService->sendResiText($transaction->customer->phone ?? '', $transaction);
+                        } catch (\Exception $e) {
+                            Log::error('Failed to send WhatsApp receipt', ['error' => $e->getMessage()]);
+                        }
+                    }
+                }
+
+                return response()->json([
+                    'success' => true,
+                    'payment_status' => $paymentStatus,
+                    'transaction_status' => $transactionStatus,
+                    'message' => 'Status berhasil diperbarui'
+                ]);
+            } else {
+                return response()->json($result, 400);
+            }
+        } catch (\Exception $e) {
+            Log::error('Error checking payment status', ['error' => $e->getMessage()]);
             return response()->json([
-                'success' => true,
-                'payment_status' => $paymentStatus,
-                'transaction_status' => $status
-            ]);
-        } else {
-            return response()->json($result, 400);
+                'success' => false,
+                'message' => 'Gagal mengecek status pembayaran: ' . $e->getMessage()
+            ], 500);
         }
     }
 
