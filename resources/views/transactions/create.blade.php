@@ -88,96 +88,19 @@
                                     class="w-full border border-gray-300 rounded-lg px-3 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-base" required>
                                 <option value="">-- Pilih Layanan Laundry --</option>
 
-                                <!-- Layanan Dasar -->
-                                <option value="1"
-                                        data-price="7000"
-                                        data-unit="kg"
-                                        data-description="Layanan cuci reguler dengan proses 2-3 hari. Cocok untuk laundry sehari-hari."
-                                        {{ old('service_id') == '1' ? 'selected' : '' }}>
-                                    🧼 Cuci Reguler - Rp 7.000/kg (2-3 hari)
+                                @forelse($services as $service)
+                                <option value="{{ $service->id }}"
+                                        data-price="{{ $service->price }}"
+                                        data-unit="{{ $service->unit }}"
+                                        data-description="{{ $service->description ?? '' }}"
+                                        {{ old('service_id') == $service->id ? 'selected' : '' }}>
+                                    {{ $service->name }} - Rp {{ number_format($service->price, 0, ',', '.') }}/{{ $service->unit }}
                                 </option>
-
-                                <option value="2"
-                                        data-price="10000"
-                                        data-unit="kg"
-                                        data-description="Layanan cuci express selesai dalam 1 hari. Prioritas untuk kebutuhan mendesak."
-                                        {{ old('service_id') == '2' ? 'selected' : '' }}>
-                                    ⚡ Cuci Express - Rp 10.000/kg (1 hari)
-                                </option>
-
-                                <option value="3"
-                                        data-price="5000"
-                                        data-unit="kg"
-                                        data-description="Hanya setrika tanpa cuci. Untuk pakaian yang sudah bersih tapi perlu rapi."
-                                        {{ old('service_id') == '3' ? 'selected' : '' }}>
-                                    🔥 Setrika Saja - Rp 5.000/kg
-                                </option>
-
-                                <option value="4"
-                                        data-price="12000"
-                                        data-unit="kg"
-                                        data-description="Paket lengkap cuci dan setrika. Pakaian bersih dan rapi siap pakai."
-                                        {{ old('service_id') == '4' ? 'selected' : '' }}>
-                                    🧺 Cuci + Setrika - Rp 12.000/kg (2-3 hari)
-                                </option>
-
-                                <option value="5"
-                                        data-price="15000"
-                                        data-unit="kg"
-                                        data-description="Paket express cuci dan setrika selesai dalam 1 hari."
-                                        {{ old('service_id') == '5' ? 'selected' : '' }}>
-                                    🚀 Cuci Express + Setrika - Rp 15.000/kg (1 hari)
-                                </option>
-
-                                <!-- Layanan Khusus -->
-                                <option value="6"
-                                        data-price="25000"
-                                        data-unit="pcs"
-                                        data-description="Dry cleaning untuk pakaian khusus seperti jas, gaun, atau bahan sensitif."
-                                        {{ old('service_id') == '6' ? 'selected' : '' }}>
-                                    👔 Dry Cleaning - Rp 25.000/pcs (3-4 hari)
-                                </option>
-
-                                <option value="7"
-                                        data-price="30000"
-                                        data-unit="pcs"
-                                        data-description="Cuci khusus untuk selimut, bed cover, atau sprei ukuran besar."
-                                        {{ old('service_id') == '7' ? 'selected' : '' }}>
-                                    🛏️ Selimut/Bed Cover - Rp 30.000/pcs (3 hari)
-                                </option>
-
-                                <option value="8"
-                                        data-price="20000"
-                                        data-unit="pcs"
-                                        data-description="Cuci khusus helm dengan bahan pembersih yang aman."
-                                        {{ old('service_id') == '8' ? 'selected' : '' }}>
-                                    🛵 Cuci Helm - Rp 20.000/pcs (1 hari)
-                                </option>
-
-                                <option value="9"
-                                        data-price="35000"
-                                        data-unit="pcs"
-                                        data-description="Cuci tas dengan treatment khusus sesuai bahan (kulit, kanvas, dll)."
-                                        {{ old('service_id') == '9' ? 'selected' : '' }}>
-                                    👜 Cuci Tas - Rp 35.000/pcs (3 hari)
-                                </option>
-
-                                <!-- Layanan Tambahan -->
-                                <option value="10"
-                                        data-price="8000"
-                                        data-unit="kg"
-                                        data-description="Cuci dengan deterjen khusus untuk bayi, hypoallergenic dan lembut."
-                                        {{ old('service_id') == '10' ? 'selected' : '' }}>
-                                    👶 Cuci Khusus Bayi - Rp 8.000/kg (2-3 hari)
-                                </option>
-
-                                <option value="11"
-                                        data-price="18000"
-                                        data-unit="kg"
-                                        data-description="Cuci dengan pewangi premium dan treatment khusus untuk pakaian putih."
-                                        {{ old('service_id') == '11' ? 'selected' : '' }}>
-                                    ✨ Cuci Premium - Rp 18.000/kg (2-3 hari)
-                                </option>
+                                @empty
+                                <option value="" disabled>Tidak ada layanan tersedia</option>
+                                @endforelse
+                            </select>
+                                       
 
                             </select>
                             @error('service_id')
