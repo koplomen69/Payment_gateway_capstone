@@ -28,15 +28,48 @@ class FonnteService
         $message = $this->buildResiMessage($transaction);
 
         try {
-            $response = Http::withHeaders([
-                'Authorization' => $this->token
-            ])->post($this->apiUrl, [
+            // Use raw token in Authorization header (provider may expect token without 'Bearer ')
+            $authHeader = $this->token;
+
+            // Build payload; include token in payload for APIs that expect token param
+            $payload = [
                 'target'  => $this->normalizePhone($phone),
                 'message' => $message,
                 'delay'   => '1-3', // Delay 1-3 detik agar tidak kena spam filter
-            ]);
+            ];
+
+            // Include raw token in payload (some providers accept token in body)
+            if (!empty($this->token)) {
+                $payload['token'] = $this->token;
+            }
+
+            // Optional sender/device id (if provider requires specifying which WA device to use)
+            $sender = env('FONNTE_SENDER');
+            if (!empty($sender)) {
+                $payload['sender'] = $sender;
+            }
+
+            // Mask token in logs to avoid leaking secrets in production logs
+            $maskedPayload = $payload;
+            if (!empty($maskedPayload['token'])) {
+                $tok = $maskedPayload['token'];
+                $maskedPayload['token'] = substr($tok, 0, 4) . str_repeat('*', max(3, strlen($tok) - 4));
+            }
+            Log::debug('FonnteService sendResiText payload', ['url' => $this->apiUrl, 'payload' => $maskedPayload]);
+
+            // Add timeout and retry to be more resilient to transient network issues
+            $response = Http::timeout(30)->retry(2, 1000)->withHeaders([
+                'Authorization' => $authHeader
+            ])->post($this->apiUrl, $payload);
 
             $responseBody = $response->json();
+
+            // Extra debug info
+            Log::debug('FonnteService sendResiText response', [
+                'http_status' => $response->status(),
+                'body' => $response->body(),
+                'json' => $responseBody,
+            ]);
 
             if ($response->successful() && ($responseBody['status'] ?? false) === true) {
                 Log::info('Resi WA terkirim sukses', [
