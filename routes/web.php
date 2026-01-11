@@ -17,8 +17,11 @@ Route::post('/transactions/midtrans-notification', [TransactionController::class
     ->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class]);
 Route::get('/transactions/{transaction}/check-status', [TransactionController::class, 'checkPaymentStatus'])
     ->name('transactions.check-status');
-// Tambahkan route untuk snap payment
-Route::get('/transactions/{transaction}/snap', [TransactionController::class, 'snapPayment'])->name('transactions.snap');
+Route::get('/transactions/{transaction}/snap', [TransactionController::class, 'snapPayment'])
+    ->name('transactions.snap');
+Route::post('/transactions/{transaction}/resend-whatsapp', [TransactionController::class, 'resendWhatsapp'])
+     ->name('transactions.resend-whatsapp');
+
 // Service Routes
 Route::resource('services', ServiceController::class);
 
@@ -26,20 +29,14 @@ Route::resource('services', ServiceController::class);
 Route::resource('customers', CustomerController::class);
 
 // Report Routes
-Route::get('/reports', [ReportController::class, 'index'])->name('reports.index');
-Route::get('/reports/profit-loss', [ReportController::class, 'profitLoss'])->name('reports.profit-loss');
-Route::get('/reports/export', [ReportController::class, 'export'])->name('reports.export');
-
-Route::middleware('auth:sanctum')->group(function () {
-    // API Reports
-    Route::get('/reports/data', [ReportController::class, 'getReportData']);
+Route::prefix('reports')->group(function () {
+    Route::get('/', [ReportController::class, 'index'])->name('reports.index');
+    Route::get('/profit-loss', [ReportController::class, 'profitLoss'])->name('reports.profit-loss');
+    Route::get('/export', [ReportController::class, 'export'])->name('reports.export');
+    Route::get('/data', [ReportController::class, 'getReportData'])->name('reports.data');
 });
 
-// Di dalam file routes/web.php, tambahkan baris ini (bisa di bawah route resource)
-Route::post('/transactions/{transaction}/resend-whatsapp', [TransactionController::class, 'resendWhatsapp'])
-     ->name('transactions.resend-whatsapp');
-
-// Debug route - tambahkan di web.php
+// Debug route for Midtrans testing
 Route::get('/debug/midtrans', function() {
     $transaction = \App\Models\Transaction::where('payment_method', 'midtrans')
         ->whereNotNull('midtrans_snap_token')
@@ -51,25 +48,7 @@ Route::get('/debug/midtrans', function() {
     }
 
     return view('transactions.snap', compact('transaction'));
-});
-
-
-Route::get('/reports', [ReportController::class, 'index'])->name('reports.index');
-Route::get('/api/reports/data', [ReportController::class, 'getReportData']);
-// Reports Routes
-Route::prefix('reports')->group(function () {
-    Route::get('/', [ReportController::class, 'index'])->name('reports.index');
-    Route::get('/profit-loss', [ReportController::class, 'profitLoss'])->name('reports.profit-loss');
-    Route::get('/export', [ReportController::class, 'export'])->name('reports.export');
-});
-Route::resource('customers', CustomerController::class);
-Route::get('/customers', [CustomerController::class, 'index'])->name('customers.index');
-Route::get('/customers/create', [CustomerController::class, 'create'])->name('customers.create');
-Route::post('/customers', [CustomerController::class, 'store'])->name('customers.store');
-Route::get('/customers/{customer}', [CustomerController::class, 'show'])->name('customers.show');
-Route::get('/customers/{customer}/edit', [CustomerController::class, 'edit'])->name('customers.edit');
-Route::put('/customers/{customer}', [CustomerController::class, 'update'])->name('customers.update');
-Route::delete('/customers/{customer}', [CustomerController::class, 'destroy'])->name('customers.destroy');
+})->name('debug.midtrans');
 
 
 
