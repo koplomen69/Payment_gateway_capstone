@@ -30,12 +30,21 @@ class ReportController extends Controller
         $operationalCosts = $totalRevenue * 0.6; // 60% operational costs assumption
         $netProfit = $totalRevenue - $operationalCosts;
 
+        // Calculate service revenue breakdown
+        $servicesRevenue = [];
+        foreach ($transactions->groupBy('service_id') as $serviceTransactions) {
+            $service = $serviceTransactions->first()->service;
+            $servicesRevenue[$service->name ?? 'Unknown'] = $serviceTransactions->sum('total_amount');
+        }
+        arsort($servicesRevenue);
+
         return view('reports.index', compact(
             'transactions',
             'totalRevenue',
             'totalTransactions',
             'operationalCosts',
             'netProfit',
+            'servicesRevenue',
             'startDate',
             'endDate'
         ));
@@ -79,7 +88,6 @@ class ReportController extends Controller
      */
     public function export(Request $request)
     {
-        $type = $request->get('type', 'pdf');
         $startDate = $request->get('start_date', date('Y-m-01'));
         $endDate = $request->get('end_date', date('Y-m-d'));
 
@@ -94,18 +102,36 @@ class ReportController extends Controller
         $totalTransactions = $transactions->count();
         $operationalCosts = $totalRevenue * 0.6;
         $netProfit = $totalRevenue - $operationalCosts;
+        $profitMargin = $totalRevenue > 0 ? ($netProfit / $totalRevenue) * 100 : 0;
+
+        // Format transactions for export (convert to array with calculated avg_transaction)
+        $formattedTransactions = $transactions->map(function ($transaction) {
+            return [
+                'invoice_number' => $transaction->invoice_number,
+                'customer_name' => $transaction->customer->name ?? 'N/A',
+                'customer_phone' => $transaction->customer->phone ?? 'N/A',
+                'service_name' => $transaction->service->name ?? 'N/A',
+                'quantity' => $transaction->quantity,
+                'price' => $transaction->price,
+                'total_amount' => $transaction->total_amount,
+                'transaction_date' => $transaction->transaction_date,
+                'payment_method' => $transaction->payment_method,
+                'payment_status' => $transaction->payment_status
+            ];
+        })->toArray();
 
         // Return data for API (JavaScript will handle the export)
         return response()->json([
             'success' => true,
             'data' => [
-                'transactions' => $transactions,
+                'transactions' => $formattedTransactions,
                 'summary' => [
-                    'total_revenue' => $totalRevenue,
-                    'total_transactions' => $totalTransactions,
-                    'operational_costs' => $operationalCosts,
-                    'net_profit' => $netProfit,
-                    'profit_margin' => $totalRevenue > 0 ? ($netProfit / $totalRevenue) * 100 : 0,
+                    'total_revenue' => (float) $totalRevenue,
+                    'total_transactions' => (int) $totalTransactions,
+                    'avg_transaction' => $totalTransactions > 0 ? round($totalRevenue / $totalTransactions) : 0,
+                    'operational_costs' => (float) $operationalCosts,
+                    'net_profit' => (float) $netProfit,
+                    'profit_margin' => (float) $profitMargin,
                     'period' => [
                         'start' => $startDate,
                         'end' => $endDate
@@ -122,7 +148,6 @@ class ReportController extends Controller
     {
         $startDate = $request->get('start_date', date('Y-m-01'));
         $endDate = $request->get('end_date', date('Y-m-d'));
-        $type = $request->get('type', 'daily'); // daily, weekly, monthly
 
         // Get transactions data
         $transactions = Transaction::with(['customer', 'service'])
@@ -155,7 +180,7 @@ class ReportController extends Controller
         $serviceData = [];
         $services = $transactions->groupBy('service_id');
 
-        foreach ($services as $serviceId => $serviceTransactions) {
+        foreach ($services as $serviceTransactions) {
             $service = $serviceTransactions->first()->service;
             $serviceData[] = [
                 'name' => $service->name,
